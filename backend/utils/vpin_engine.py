@@ -85,7 +85,7 @@ class VPINEngine:
             start_time=datetime.now()
         )
 
-    def process_trade(self, trade: dict) -> dict:
+    def process_trade(self, trade: dict) -> list[dict] | None:
         """
         The main entry point. Feed every trade here.
         Returns a VPIN result dict every time a bucket completes.
@@ -171,17 +171,19 @@ class VPINEngine:
             "sell_volume": round(bucket.sell_volume, 6),
             "order_imbalance": round(bucket.order_imbalance, 4),
             "alert": vpin_score >= self.alert_threshold,
-            "alert_level": self._classify_alert(vpin_score)
+            "alert_level": self.classify_alert(vpin_score)
         }
 
         self.vpin_history.append(result)
         return result
 
-    def _classify_alert(self, vpin: float) -> str:
+    def classify_alert(self, vpin: float | None) -> str:
         """
         Human-readable classification of the VPIN score.
         These thresholds are calibrated to crypto market conditions.
         """
+        if vpin is None:
+            return "NORMAL"
         if vpin >= 0.85:
             return "CRITICAL"    # Extreme informed trading detected
         elif vpin >= 0.75:
