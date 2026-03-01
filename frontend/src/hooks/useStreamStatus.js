@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { fetchJson, fetchJsonAny } from "../lib/api";
+import { fetchJson } from "../lib/api";
 
 export function useStreamStatus(intervalMs = 5000) {
   const [status, setStatus] = useState(null);
@@ -49,7 +49,7 @@ export function useStreamStatus(intervalMs = 5000) {
               "/stop_stream",
               "/system/reset?start_stream=false",
             ];
-        await fetchJsonAny(streamPaths, {
+        await fetchJson(streamPaths, {
           method: "POST",
         });
         await refresh();
@@ -69,7 +69,7 @@ export function useStreamStatus(intervalMs = 5000) {
       setActionLoading(true);
       setActionError("");
       try {
-        await fetchJsonAny(
+        await fetchJson(
           [
             `/system/reset?start_stream=${startStream ? "true" : "false"}`,
             "/system/reset",
