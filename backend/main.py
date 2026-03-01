@@ -37,8 +37,8 @@ app.add_middleware(
     allow_origins=[
       "http://localhost:5173",
       "http://localhost:8080",
-      "https://ravishing-dream-production.up.railway.app",
-      "https://cassandra-production-516a.up.railway.app",
+      "https://cassandra.samintech.dev",
+      "https://ravishing-dream-production.up.railway.app/",
     ],
     allow_credentials=True,
     allow_methods=["*"],

@@ -61,8 +61,8 @@ export default function IntelligenceBrief({ brief, error }) {
     <section className="animate-rise rounded-3xl border border-white/10 bg-ink-900/85 p-5 backdrop-blur-sm">
       <div className="mb-4 flex items-end justify-between">
         <div>
-          <p className="font-mono text-xs uppercase tracking-[0.25em] text-signal-red">Intelligence</p>
-          <h2 className="font-display text-xl font-semibold text-white">Agent brief</h2>
+          <p className="font-mono text-xs uppercase tracking-[0.25em] text-signal-red">Cassandra's</p>
+          <h2 className="font-display text-xl font-semibold text-white">Brief</h2>
         </div>
         {brief?.timestamp ? (
           <p className="font-mono text-xs text-white/60">Generated {formatTimestamp(brief.timestamp)}</p>
