@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getWebsocketCandidates } from "../lib/api";
+import { getWebsocketUrl } from "../lib/api";
 
 const MAX_POINTS = 200;
 
@@ -25,15 +25,14 @@ export function useVpinStream() {
 
   useEffect(() => {
     let isClosed = false;
-    const wsCandidates = getWebsocketCandidates();
+    const wsUrl = getWebsocketUrl();
 
-    if (wsCandidates.length === 0) {
-      setConnectionError("No websocket URL candidates available.");
+    if (!wsUrl) {
+      setConnectionError("No websocket URL available.");
       return () => {};
     }
 
     const connect = () => {
-      const wsUrl = wsCandidates[wsCandidateIndexRef.current % wsCandidates.length];
       const socket = new WebSocket(wsUrl);
       socketRef.current = socket;
 
