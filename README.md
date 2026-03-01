@@ -19,16 +19,6 @@ The system streams Binance BTCUSDT trades, computes VPIN, pushes live updates ov
 5. Frontend live chart and metrics update in real time.
 6. On elevated conditions, agent tools run and publish intelligence briefs.
 
-## Repository Cleanup Performed
-
-Removed generated/non-source artifacts before containerization:
-
-- `frontend/node_modules/`
-- `frontend/dist/`
-- `frontend/CASSandra.zip`
-- `.DS_Store` files
-- transient caches (`frontend/.vite`, `backend/__pycache__`)
-- `backend/img/` screenshot artifact folder
 
 ## Prerequisites
 
