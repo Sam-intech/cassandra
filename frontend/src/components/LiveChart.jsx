@@ -39,7 +39,11 @@ export default function LiveChart({
             {streamOnline ? "stream online" : "stream offline"}
           </span>
           <p className="font-mono text-xs text-white/60">
-            {data.length > 0 ? `Updated ${formatTimestamp(data[data.length - 1].timestamp)}` : "Waiting for stream..."}
+            {data.length > 0
+              ? `Updated ${formatTimestamp(data[data.length - 1].timestamp)}`
+              : streaming
+                ? "streaming..."
+                : "Waiting for stream..."}
           </p>
         </div>
       </div>

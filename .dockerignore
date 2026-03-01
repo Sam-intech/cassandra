@@ -1,0 +1,22 @@
+.git
+.gitignore
+.claude
+
+# Python
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.venv/
+**/venv/
+**/env/
+
+# Frontend artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Local files
+.DS_Store
+*.env
+*.log
