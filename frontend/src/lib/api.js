@@ -29,8 +29,3 @@ export async function fetchJson(path, options = {}) {
 
   return response.json();
 }
-```
-
-Then go to Railway → **Frontend service** → **Variables** → Add:
-```
-VITE_API_BASE_URL = VITE_API_BASE_URL from .env.example
