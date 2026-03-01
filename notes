@@ -30,4 +30,29 @@ Your demo opening line:
 
 ---
 
-Ready to start building CASSANDRA? Let's go to Layer 1.
+Ready to start building CASSANDRA? Let's go to Layer 1.\
+
+
+
+
+
+
+CUSTOM DOMAIN
+
+backend domain: cassandra-production-516a.up.railway.app
+frontend: ravishing-dream-production.up.railway.app
+
+Railway frontend CNAME details
+----
+[
+  {
+    Type: CNAME
+    Name: cassandra
+    value: old188ll.up.railway.app  
+  },
+  {
+    Type: TXT
+    Name: _railway-verify.cassandra
+    value: railway-verify=1e27925e0a8feca699bcf3a24c22573403be288c09b29790a828323944b237b8
+  }
+]
