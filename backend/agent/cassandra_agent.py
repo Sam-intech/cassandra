@@ -1,16 +1,22 @@
-# agents/cassandra_agent.py
-# CASSANDRA - Mistral Intelligence Agent
-# When VPIN spikes, this agent investigates autonomously using multiple tools
-# and generates a professional intelligence brief for the trader
+# backend/agent/cassandra_agent.py
+# CASSANDRA - Autonomous Intelligence Agent
+
+from __future__ import annotations
+
+import json
+import os
+from collections import deque
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from typing import Any
 
 import boto3
-import json
-import requests
-import os
-from datetime import datetime, timezone
 from dotenv import load_dotenv
 
+from backend.agent.tools import AgentTools, ToolSpec
+
 load_dotenv()
+
 
 # ── AWS Bedrock Client ─────────────────────────────────────
 def _bedrock_client():
@@ -18,7 +24,6 @@ def _bedrock_client():
         "service_name": "bedrock-runtime",
         "region_name": os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1",
     }
-    # Use explicit credentials from env when set (including session token for temporary creds)
     if os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"):
         kwargs["aws_access_key_id"] = os.getenv("AWS_ACCESS_KEY_ID")
         kwargs["aws_secret_access_key"] = os.getenv("AWS_SECRET_ACCESS_KEY")
@@ -30,378 +35,573 @@ def _bedrock_client():
 bedrock = _bedrock_client()
 
 # ── Model Configuration ────────────────────────────────────
-TRIAGE_MODEL  = "mistral.mixtral-8x7b-instruct-v0:1"   # Fast first assessment
-ANALYST_MODEL = "mistral.mistral-large-2402-v1:0"       # Deep reasoning
+TRIAGE_MODEL = "mistral.mixtral-8x7b-instruct-v0:1"
+ANALYST_MODEL = "mistral.mistral-large-2402-v1:0"
+
+ALERT_LEVELS = {"ELEVATED", "HIGH", "CRITICAL"}
 
 
-# ══════════════════════════════════════════════════════════
-# TOOL DEFINITIONS
-# These are the real-world data sources the agent can call
-# ══════════════════════════════════════════════════════════
-
-def tool_fetch_crypto_news(symbol: str = "BTC") -> dict:
-    """
-    Tool 1: Fetch latest crypto news from CryptoPanic.
-    Free tier — no key needed for public feed.
-    """
-    try:
-        url = f"https://cryptopanic.com/api/v1/posts/?auth_token=free&currencies={symbol}&kind=news&public=true"
-        response = requests.get(url, timeout=5)
-        
-        if response.status_code != 200:
-            return {"error": f"News API returned {response.status_code}"}
-        
-        data = response.json()
-        articles = data.get("results", [])[:5]  # Top 5 most recent
-        
-        news_items = []
-        for article in articles:
-            news_items.append({
-                "title": article.get("title", ""),
-                "source": article.get("source", {}).get("title", ""),
-                "published": article.get("published_at", ""),
-                "url": article.get("url", "")
-            })
-        
-        return {"symbol": symbol, "news": news_items, "count": len(news_items)}
-    
-    except Exception as e:
-        return {"error": str(e)}
+@dataclass
+class MemoryEvent:
+    timestamp: str
+    vpin_score: float
+    alert_level: str
+    trend_tag: str
+    alert_streak: int
+    investigated: bool
+    reason: str
+    tools_called: list[str] = field(default_factory=list)
 
 
-def tool_fetch_binance_market_data(symbol: str = "BTCUSDT") -> dict:
-    """
-    Tool 2: Fetch current market snapshot from Binance.
-    Price, 24h change, volume, bid/ask spread.
-    Free, no API key required.
-    """
-    try:
-        # 24hr ticker
-        ticker_url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
-        ticker = requests.get(ticker_url, timeout=5).json()
-
-        # Current order book top level
-        book_url = f"https://api.binance.com/api/v3/depth?symbol={symbol}&limit=5"
-        book = requests.get(book_url, timeout=5).json()
-
-        best_bid = float(book["bids"][0][0])
-        best_ask = float(book["asks"][0][0])
-        spread = best_ask - best_bid
-        spread_pct = (spread / best_bid) * 100
-
-        return {
-            "symbol": symbol,
-            "price": float(ticker["lastPrice"]),
-            "price_change_24h_pct": float(ticker["priceChangePercent"]),
-            "volume_24h_btc": float(ticker["volume"]),
-            "high_24h": float(ticker["highPrice"]),
-            "low_24h": float(ticker["lowPrice"]),
-            "bid": best_bid,
-            "ask": best_ask,
-            "spread_pct": round(spread_pct, 4),
-            "num_trades_24h": int(ticker["count"])
-        }
-    
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def tool_fetch_funding_rate(symbol: str = "BTCUSDT") -> dict:
-    """
-    Tool 3: Fetch perpetual futures funding rate from Binance.
-    Funding rate is a powerful signal — extreme positive = overleveraged longs,
-    extreme negative = overleveraged shorts. Both precede violent moves.
-    """
-    try:
-        url = f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={symbol}&limit=3"
-        response = requests.get(url, timeout=5)
-        data = response.json()
-
-        if not data or isinstance(data, dict):
-            return {"error": "No funding data available"}
-
-        rates = []
-        for item in data:
-            rates.append({
-                "funding_rate": float(item["fundingRate"]),
-                "funding_rate_pct": round(float(item["fundingRate"]) * 100, 4),
-                "time": datetime.fromtimestamp(
-                    item["fundingTime"] / 1000, tz=timezone.utc
-                ).strftime("%Y-%m-%d %H:%M UTC")
-            })
-
-        latest_rate = rates[0]["funding_rate_pct"] if rates else 0
-        
-        # Interpret the funding rate
-        if latest_rate > 0.1:
-            interpretation = "EXTREME_LONG_BIAS — high liquidation risk for longs"
-        elif latest_rate > 0.05:
-            interpretation = "ELEVATED_LONG_BIAS — market overleveraged long"
-        elif latest_rate < -0.05:
-            interpretation = "ELEVATED_SHORT_BIAS — market overleveraged short"
-        elif latest_rate < -0.1:
-            interpretation = "EXTREME_SHORT_BIAS — high liquidation risk for shorts"
-        else:
-            interpretation = "NEUTRAL — balanced leverage"
-
-        return {
-            "symbol": symbol,
-            "latest_funding_rate_pct": latest_rate,
-            "interpretation": interpretation,
-            "history": rates
-        }
-    
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def tool_analyse_vpin_pattern(vpin_history: list) -> dict:
-    """
-    Tool 4: Statistical analysis of recent VPIN pattern.
-    Computes trend, acceleration, and compares to historical baselines.
-    """
-    if not vpin_history or len(vpin_history) < 5:
-        return {"error": "Insufficient VPIN history"}
-
-    recent = [r["vpin"] for r in vpin_history[-20:]]  # Last 20 readings
-    current = recent[-1]
-    mean = sum(recent) / len(recent)
-    
-    # Trend: is VPIN rising or falling?
-    first_half = sum(recent[:len(recent)//2]) / (len(recent)//2)
-    second_half = sum(recent[len(recent)//2:]) / (len(recent)//2)
-    trend = "RISING" if second_half > first_half else "FALLING"
-    trend_magnitude = abs(second_half - first_half)
-
-    # How long has it been elevated?
-    elevated_count = sum(1 for v in recent if v >= 0.55)
-    
-    # Historical crisis comparison
-    crisis_profiles = {
-        "FTX_collapse": {"peak": 0.73, "duration_buckets": 180, "pattern": "sustained_rise"},
-        "LUNA_collapse": {"peak": 0.81, "duration_buckets": 240, "pattern": "spike_and_sustain"},
-        "March_2020_crash": {"peak": 0.69, "duration_buckets": 120, "pattern": "sudden_spike"},
-    }
-
-    closest_crisis = None
-    closest_distance = float("inf")
-    for crisis, profile in crisis_profiles.items():
-        distance = abs(current - profile["peak"])
-        if distance < closest_distance:
-            closest_distance = distance
-            closest_crisis = crisis
-
-    return {
-        "current_vpin": round(current, 4),
-        "mean_vpin_recent": round(mean, 4),
-        "trend": trend,
-        "trend_magnitude": round(trend_magnitude, 4),
-        "elevated_buckets_of_last_20": elevated_count,
-        "closest_historical_pattern": closest_crisis,
-        "pattern_similarity_score": round(1 - closest_distance, 4)
-    }
-
-
-# ══════════════════════════════════════════════════════════
-# BEDROCK CALLER
-# ══════════════════════════════════════════════════════════
-
-def call_mistral(prompt: str, model: str, max_tokens: int = 1000, temperature: float = 0.2) -> str:
-    """
-    Calls a Mistral model through AWS Bedrock.
-    Returns the text response.
-    """
+# ── Bedrock Caller ─────────────────────────────────────────
+def call_mistral(
+    prompt: str,
+    model: str,
+    max_tokens: int = 1000,
+    temperature: float = 0.2,
+) -> str:
     response = bedrock.invoke_model(
         modelId=model,
-        body=json.dumps({
-            "prompt": f"<s>[INST] {prompt} [/INST]",
-            "max_tokens": max_tokens,
-            "temperature": temperature
-        })
+        body=json.dumps(
+            {
+                "prompt": f"<s>[INST] {prompt} [/INST]",
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+        ),
     )
-    result = json.loads(response['body'].read())
-    return result['outputs'][0]['text'].strip()
+    result = json.loads(response["body"].read())
+    return result["outputs"][0]["text"].strip()
 
-
-# ══════════════════════════════════════════════════════════
-# THE AGENT
-# ══════════════════════════════════════════════════════════
 
 class CassandraAgent:
     """
-    A two-stage autonomous agent.
-
-    Stage 1 — TRIAGE (Mixtral 8x7B, fast):
-        Receives the VPIN spike alert.
-        Decides which tools to call and in what order.
-
-    Stage 2 — ANALYSIS (Mistral Large, deep):
-        Receives all tool outputs.
-        Synthesises everything into a professional intelligence brief.
+    Autonomous intelligence agent with:
+      - Long-running memory
+      - Dynamic tool planning (including no-tool decisions)
+      - Retry/fallback tool execution
+      - Deep-dive follow-up investigations
+      - Trend-pattern detection from consecutive alerts
     """
 
     def __init__(self):
-        self.tool_registry = {
-            "fetch_crypto_news":     tool_fetch_crypto_news,
-            "fetch_market_data":     tool_fetch_binance_market_data,
-            "fetch_funding_rate":    tool_fetch_funding_rate,
-            "analyse_vpin_pattern":  tool_analyse_vpin_pattern,
-        }
+        self.tools = AgentTools()
+        self.memory: deque[MemoryEvent] = deque(maxlen=500)
+        self.alert_streak = 0
 
-    def run(self, vpin_score: float, alert_level: str, vpin_history: list) -> dict:
-        """
-        Main agent entry point. Called whenever VPIN crosses threshold.
-        Returns a structured intelligence brief.
-        """
-        print(f"\n[CASSANDRA AGENT] Alert triggered — VPIN: {vpin_score} | Level: {alert_level}")
-        print(f"[CASSANDRA AGENT] Stage 1: Triage assessment...")
+    def reset_memory(self) -> None:
+        self.memory.clear()
+        self.alert_streak = 0
 
-        # ── Stage 1: Triage ───────────────────────────────
-        triage_prompt = f"""You are CASSANDRA, an AI system that monitors crypto market order flow toxicity.
+    def get_memory_snapshot(self, limit: int = 10) -> list[dict[str, Any]]:
+        return [asdict(event) for event in list(self.memory)[-max(1, limit) :]]
 
-A VPIN alert has been triggered:
-- Current VPIN Score: {vpin_score}
-- Alert Level: {alert_level}
-- VPIN measures order flow toxicity — high values indicate informed trading activity
-
-You have access to these tools:
-1. fetch_crypto_news — latest BTC news headlines
-2. fetch_market_data — current price, volume, spread
-3. fetch_funding_rate — futures funding rate and leverage positioning  
-4. analyse_vpin_pattern — statistical analysis of the VPIN trend
-
-Which tools should be called to investigate this alert? 
-Respond with ONLY a JSON array of tool names in the order they should be called.
-Example: ["fetch_market_data", "fetch_funding_rate", "fetch_crypto_news", "analyse_vpin_pattern"]"""
-
-        triage_response = call_mistral(triage_prompt, TRIAGE_MODEL, max_tokens=100)
-        
-        # Parse tool selection
+    def _safe_call_mistral(
+        self,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> str | None:
         try:
-            # Extract JSON array from response
-            start = triage_response.find("[")
-            end = triage_response.rfind("]") + 1
-            tools_to_call = json.loads(triage_response[start:end])
-        except:
-            # Default tool order if parsing fails
-            tools_to_call = ["fetch_market_data", "fetch_funding_rate", 
-                           "fetch_crypto_news", "analyse_vpin_pattern"]
+            return call_mistral(
+                prompt=prompt,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except Exception as exc:
+            print(f"[CASSANDRA AGENT] LLM call failed: {exc}")
+            return None
 
-        print(f"[CASSANDRA AGENT] Tools selected: {tools_to_call}")
+    def _extract_json_array(self, raw_text: str | None) -> list[str] | None:
+        if not raw_text:
+            return None
+        start = raw_text.find("[")
+        end = raw_text.rfind("]") + 1
+        if start < 0 or end <= start:
+            return None
+        try:
+            parsed = json.loads(raw_text[start:end])
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(parsed, list):
+            return None
+        valid = set(self.tools.names())
+        return [item for item in parsed if isinstance(item, str) and item in valid]
 
-        # ── Execute Tools ──────────────────────────────────
-        tool_results = {}
-        for tool_name in tools_to_call:
-            if tool_name in self.tool_registry:
-                print(f"[CASSANDRA AGENT] Running tool: {tool_name}...")
-                tool_fn = self.tool_registry[tool_name]
-                
-                # Pass vpin_history to the pattern analysis tool
-                if tool_name == "analyse_vpin_pattern":
-                    tool_results[tool_name] = tool_fn(vpin_history)
+    def _is_alert(self, alert_level: str, vpin_score: float) -> bool:
+        return alert_level in ALERT_LEVELS or vpin_score >= 0.65
+
+    def _detect_trend_tag(self, vpin_history: list[dict], alert_streak: int) -> str:
+        if not vpin_history or len(vpin_history) < 3:
+            return "INSUFFICIENT_HISTORY"
+
+        recent = [float(row["vpin"]) for row in vpin_history[-6:]]
+        increases = sum(1 for idx in range(1, len(recent)) if recent[idx] > recent[idx - 1])
+        decreases = sum(1 for idx in range(1, len(recent)) if recent[idx] < recent[idx - 1])
+        variation = max(recent) - min(recent)
+
+        if alert_streak >= 3 and increases >= max(1, len(recent) - 2):
+            return "SUSTAINED_TOXICITY_UPTREND"
+        if alert_streak >= 3:
+            return "PERSISTENT_TOXICITY_REGIME"
+        if variation < 0.03:
+            return "RANGE_BOUND_FLOW"
+        if increases > decreases:
+            return "EMERGING_UPTREND"
+        if decreases > increases:
+            return "MEAN_REVERTING"
+        return "MIXED_FLOW"
+
+    def _should_investigate(
+        self,
+        vpin_score: float,
+        alert_level: str,
+        trend_tag: str,
+    ) -> tuple[bool, str]:
+        if not self._is_alert(alert_level, vpin_score):
+            return False, "Pattern is within normal VPIN regime."
+
+        if trend_tag == "RANGE_BOUND_FLOW" and self.alert_streak < 3 and vpin_score < 0.72:
+            return False, "Elevated but range-bound flow; skipping unnecessary tool calls."
+
+        if self.memory:
+            last = self.memory[-1]
+            if (
+                last.investigated
+                and last.trend_tag == trend_tag
+                and abs(last.vpin_score - vpin_score) < 0.005
+            ):
+                return False, "Signal is near-duplicate of latest investigated state."
+
+        return True, "Anomalous or persistent pattern detected."
+
+    def _heuristic_tool_plan(self, alert_level: str, trend_tag: str) -> list[str]:
+        plan: list[str] = ["analyse_vpin_pattern", "fetch_market_data"]
+
+        if alert_level in {"HIGH", "CRITICAL"} or "UPTREND" in trend_tag:
+            plan.extend(["fetch_order_book_imbalance", "fetch_funding_rate"])
+        else:
+            plan.append("fetch_funding_rate")
+
+        if alert_level == "CRITICAL" or self.alert_streak >= 3:
+            plan.append("fetch_crypto_news")
+
+        # Preserve order while removing duplicates
+        deduped: list[str] = []
+        for name in plan:
+            if name not in deduped:
+                deduped.append(name)
+        return deduped
+
+    def _llm_tool_plan(self, vpin_score: float, alert_level: str, trend_tag: str) -> list[str] | None:
+        prompt = f"""You are an autonomous market-intelligence planner.
+
+Signal context:
+- VPIN score: {vpin_score}
+- Alert level: {alert_level}
+- Detected trend tag: {trend_tag}
+- Consecutive alert streak: {self.alert_streak}
+
+Available tools:
+{chr(10).join(self.tools.descriptions())}
+
+Return ONLY a JSON array of tool names (use [] if no tool is needed).
+Prefer minimal but sufficient evidence collection."""
+
+        triage = self._safe_call_mistral(
+            prompt=prompt,
+            model=TRIAGE_MODEL,
+            max_tokens=120,
+            temperature=0.1,
+        )
+        return self._extract_json_array(triage)
+
+    def _is_tool_result_informative(self, tool_name: str, result: dict) -> bool:
+        if not isinstance(result, dict) or result.get("error"):
+            return False
+
+        if tool_name == "fetch_crypto_news":
+            return int(result.get("count", 0)) > 0
+        if tool_name == "fetch_market_data":
+            return float(result.get("num_trades_24h", 0)) > 0
+        if tool_name == "fetch_funding_rate":
+            return len(result.get("history", [])) > 0
+        if tool_name == "fetch_order_book_imbalance":
+            return "imbalance_ratio" in result
+        if tool_name == "analyse_vpin_pattern":
+            return "current_vpin" in result
+
+        return True
+
+    def _execute_tool(
+        self,
+        spec: ToolSpec,
+        vpin_history: list[dict],
+        parameter_sets: list[dict[str, Any]],
+    ) -> tuple[dict, list[dict[str, Any]]]:
+        attempts: list[dict[str, Any]] = []
+        best_result: dict[str, Any] = {"error": "No attempt executed"}
+
+        for params in parameter_sets:
+            try:
+                if spec.requires_vpin_history:
+                    result = spec.fn(vpin_history=vpin_history, **params)
                 else:
-                    tool_results[tool_name] = tool_fn()
+                    result = spec.fn(**params)
+            except Exception as exc:
+                result = {"error": str(exc)}
 
-        # ── Stage 2: Deep Analysis ─────────────────────────
-        print(f"[CASSANDRA AGENT] Stage 2: Generating intelligence brief...")
+            informative = self._is_tool_result_informative(spec.name, result)
+            attempts.append(
+                {
+                    "tool": spec.name,
+                    "params": params,
+                    "informative": informative,
+                    "error": result.get("error"),
+                }
+            )
+            best_result = result
 
-        tool_summary = json.dumps(tool_results, indent=2, default=str)
+            if informative:
+                break
 
-        analysis_prompt = f"""You are CASSANDRA, a professional crypto market intelligence system used by institutional traders.
+        return best_result, attempts
 
-A significant order flow toxicity alert has been detected:
-- VPIN Score: {vpin_score} (Alert Level: {alert_level})
-- Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
+    def _execute_tool_plan(
+        self,
+        plan: list[str],
+        vpin_history: list[dict],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+        tool_results: dict[str, Any] = {}
+        execution_log: list[dict[str, Any]] = []
+        tools_called: list[str] = []
 
-Your intelligence tools have returned the following data:
-{tool_summary}
+        for tool_name in plan:
+            spec = self.tools.get(tool_name)
+            if spec is None:
+                continue
 
-Generate a concise, professional intelligence brief with these exact sections:
+            parameter_sets = [spec.default_params, *spec.fallback_params]
+            result, attempts = self._execute_tool(spec, vpin_history, parameter_sets)
+            tool_results[tool_name] = result
+            execution_log.extend(attempts)
+            tools_called.append(tool_name)
 
-## CASSANDRA ALERT — {alert_level}
-**VPIN Score:** {vpin_score} | **Time:** {datetime.now(timezone.utc).strftime('%H:%M UTC')}
+        return tool_results, execution_log, tools_called
 
-### Situation Assessment
-[2-3 sentences: what the VPIN signal means in context of current market conditions]
+    def _should_deep_dive(
+        self,
+        alert_level: str,
+        trend_tag: str,
+        tool_results: dict[str, Any],
+    ) -> tuple[bool, str]:
+        errors = sum(1 for result in tool_results.values() if isinstance(result, dict) and result.get("error"))
 
-### Corroborating Signals  
-[Bullet points: what the other data sources confirm or contradict]
+        if alert_level == "CRITICAL":
+            return True, "Critical signal requires deeper evidence."
+        if self.alert_streak >= 3:
+            return True, "Three or more consecutive alerts detected."
+        if errors >= 2:
+            return True, "Primary toolset returned insufficient evidence."
+        if trend_tag == "SUSTAINED_TOXICITY_UPTREND":
+            return True, "Sustained uptrend in toxicity warrants extended analysis."
 
-### Pattern Classification
-[Which historical event this most resembles and why]
+        return False, "Primary investigation sufficient."
 
-### Risk Assessment
-[Specific, concrete risks a trader should be aware of right now]
+    def _execute_deep_dive(
+        self,
+        vpin_history: list[dict],
+        already_called: list[str],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+        deep_results: dict[str, Any] = {}
+        deep_log: list[dict[str, Any]] = []
+        deep_tools: list[str] = []
 
-### Recommended Actions
-[3 specific, actionable steps for a trader seeing this alert]
+        follow_up_plan: list[tuple[str, list[dict[str, Any]]]] = []
 
-Be direct. Be specific. Use the actual numbers from the data. No generic statements."""
+        if "fetch_market_data" in already_called:
+            follow_up_plan.append(("fetch_market_data", [{"symbol": "ETHUSDT", "depth_limit": 20}]))
+        else:
+            follow_up_plan.append(("fetch_market_data", [{"symbol": "BTCUSDT", "depth_limit": 20}]))
 
-        brief = call_mistral(analysis_prompt, ANALYST_MODEL, max_tokens=800, temperature=0.1)
+        if "fetch_funding_rate" in already_called:
+            follow_up_plan.append(("fetch_funding_rate", [{"symbol": "ETHUSDT", "limit": 6}]))
+        else:
+            follow_up_plan.append(("fetch_funding_rate", [{"symbol": "BTCUSDT", "limit": 6}]))
 
-        result = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+        if "fetch_order_book_imbalance" in already_called:
+            follow_up_plan.append(("fetch_order_book_imbalance", [{"symbol": "BTCUSDT", "limit": 50}]))
+        else:
+            follow_up_plan.append(("fetch_order_book_imbalance", [{"symbol": "ETHUSDT", "limit": 50}]))
+
+        follow_up_plan.append(("analyse_vpin_pattern", [{"lookback": 40}]))
+
+        if self.alert_streak >= 3 or "fetch_crypto_news" in already_called:
+            follow_up_plan.append(("fetch_crypto_news", [{"symbol": "ETH", "limit": 8}]))
+
+        for tool_name, parameter_sets in follow_up_plan:
+            spec = self.tools.get(tool_name)
+            if spec is None:
+                continue
+
+            result, attempts = self._execute_tool(
+                spec=spec,
+                vpin_history=vpin_history,
+                parameter_sets=parameter_sets,
+            )
+            deep_results[f"{tool_name}_follow_up"] = result
+            deep_log.extend(attempts)
+            deep_tools.append(tool_name)
+
+        return deep_results, deep_log, deep_tools
+
+    def _build_fallback_brief(
+        self,
+        vpin_score: float,
+        alert_level: str,
+        trend_tag: str,
+        tool_results: dict[str, Any],
+        deep_dive_reason: str,
+    ) -> str:
+        error_count = sum(1 for result in tool_results.values() if isinstance(result, dict) and result.get("error"))
+        return (
+            f"# CASSANDRA ALERT - {alert_level}\n"
+            f"VPIN: {vpin_score:.4f}\n"
+            f"Trend tag: {trend_tag}\n"
+            f"Consecutive alert streak: {self.alert_streak}\n\n"
+            f"Situation Assessment:\n"
+            f"The agent detected an abnormal order-flow regime and executed autonomous tool checks. "
+            f"Tool errors: {error_count}.\n\n"
+            f"Pattern Classification:\n"
+            f"{trend_tag}.\n\n"
+            f"Autonomous Action:\n"
+            f"{deep_dive_reason}\n\n"
+            f"Risk Assessment:\n"
+            f"Elevated probability of informed-flow dominance and short-term liquidity imbalance.\n\n"
+            f"Recommended Actions:\n"
+            f"- Reduce leverage and tighten invalidation levels.\n"
+            f"- Monitor spread/imbalance for continuation vs exhaustion.\n"
+            f"- Require confirmation before adding directional risk."
+        )
+
+    def _generate_brief(
+        self,
+        vpin_score: float,
+        alert_level: str,
+        trend_tag: str,
+        decision_reason: str,
+        tool_results: dict[str, Any],
+        deep_dive_reason: str,
+    ) -> str:
+        prompt = f"""You are CASSANDRA, an institutional crypto intelligence analyst.
+
+Context:
+- VPIN score: {vpin_score}
+- Alert level: {alert_level}
+- Trend tag: {trend_tag}
+- Consecutive alert streak: {self.alert_streak}
+- Decision rationale: {decision_reason}
+- Deep-dive rationale: {deep_dive_reason}
+
+Tool outputs:
+{json.dumps(tool_results, indent=2, default=str)}
+
+Write a concise brief with clear headings and bold heading titles (not markdown asterisks as visible characters).
+Use these sections:
+1. CASSANDRA ALERT
+2. Situation Assessment
+3. Corroborating Signals
+4. Pattern Classification
+5. Risk Assessment
+6. Recommended Actions
+
+Be specific and evidence-based."""
+
+        llm_brief = self._safe_call_mistral(
+            prompt=prompt,
+            model=ANALYST_MODEL,
+            max_tokens=900,
+            temperature=0.1,
+        )
+
+        if llm_brief:
+            return llm_brief
+
+        return self._build_fallback_brief(
+            vpin_score=vpin_score,
+            alert_level=alert_level,
+            trend_tag=trend_tag,
+            tool_results=tool_results,
+            deep_dive_reason=deep_dive_reason,
+        )
+
+    def run(self, vpin_score: float, alert_level: str, vpin_history: list[dict]) -> dict:
+        """Autonomous entry point for stream alerts."""
+        is_alert = self._is_alert(alert_level, vpin_score)
+        self.alert_streak = self.alert_streak + 1 if is_alert else 0
+
+        trend_tag = self._detect_trend_tag(vpin_history=vpin_history, alert_streak=self.alert_streak)
+        investigate, decision_reason = self._should_investigate(
+            vpin_score=vpin_score,
+            alert_level=alert_level,
+            trend_tag=trend_tag,
+        )
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        if not investigate:
+            skipped_brief = (
+                f"CASSANDRA ALERT: {alert_level}\n"
+                f"VPIN: {vpin_score:.4f}\n"
+                f"Decision: skipped investigation\n"
+                f"Reason: {decision_reason}\n"
+                f"Trend tag: {trend_tag}\n"
+                f"Consecutive alerts: {self.alert_streak}"
+            )
+            self.memory.append(
+                MemoryEvent(
+                    timestamp=timestamp,
+                    vpin_score=vpin_score,
+                    alert_level=alert_level,
+                    trend_tag=trend_tag,
+                    alert_streak=self.alert_streak,
+                    investigated=False,
+                    reason=decision_reason,
+                    tools_called=[],
+                )
+            )
+            return {
+                "timestamp": timestamp,
+                "vpin_score": vpin_score,
+                "alert_level": alert_level,
+                "trend_tag": trend_tag,
+                "alert_streak": self.alert_streak,
+                "investigated": False,
+                "decision_reason": decision_reason,
+                "tools_called": [],
+                "tool_results": {},
+                "execution_log": [],
+                "deep_dive_performed": False,
+                "deep_dive_reason": "Investigation skipped.",
+                "intelligence_brief": skipped_brief,
+                "memory_snapshot": self.get_memory_snapshot(limit=8),
+            }
+
+        llm_plan = self._llm_tool_plan(
+            vpin_score=vpin_score,
+            alert_level=alert_level,
+            trend_tag=trend_tag,
+        )
+        heuristic_plan = self._heuristic_tool_plan(alert_level=alert_level, trend_tag=trend_tag)
+
+        tools_to_call = llm_plan if llm_plan is not None else heuristic_plan
+        for tool_name in heuristic_plan:
+            if tool_name not in tools_to_call and alert_level == "CRITICAL":
+                tools_to_call.append(tool_name)
+
+        tool_results, execution_log, tools_called = self._execute_tool_plan(
+            plan=tools_to_call,
+            vpin_history=vpin_history,
+        )
+
+        do_deep_dive, deep_dive_reason = self._should_deep_dive(
+            alert_level=alert_level,
+            trend_tag=trend_tag,
+            tool_results=tool_results,
+        )
+
+        deep_dive_results: dict[str, Any] = {}
+        deep_dive_tools: list[str] = []
+        if do_deep_dive:
+            dive_results, dive_log, dive_tools = self._execute_deep_dive(
+                vpin_history=vpin_history,
+                already_called=tools_called,
+            )
+            deep_dive_results = dive_results
+            execution_log.extend(dive_log)
+            deep_dive_tools = dive_tools
+            tool_results.update(deep_dive_results)
+
+        brief = self._generate_brief(
+            vpin_score=vpin_score,
+            alert_level=alert_level,
+            trend_tag=trend_tag,
+            decision_reason=decision_reason,
+            tool_results=tool_results,
+            deep_dive_reason=deep_dive_reason,
+        )
+
+        all_tools_called = tools_called + deep_dive_tools
+        self.memory.append(
+            MemoryEvent(
+                timestamp=timestamp,
+                vpin_score=vpin_score,
+                alert_level=alert_level,
+                trend_tag=trend_tag,
+                alert_streak=self.alert_streak,
+                investigated=True,
+                reason=decision_reason,
+                tools_called=all_tools_called,
+            )
+        )
+
+        return {
+            "timestamp": timestamp,
             "vpin_score": vpin_score,
             "alert_level": alert_level,
-            "tools_called": tools_to_call,
+            "trend_tag": trend_tag,
+            "alert_streak": self.alert_streak,
+            "investigated": True,
+            "decision_reason": decision_reason,
+            "tools_called": all_tools_called,
             "tool_results": tool_results,
-            "intelligence_brief": brief
+            "execution_log": execution_log,
+            "deep_dive_performed": do_deep_dive,
+            "deep_dive_reason": deep_dive_reason,
+            "intelligence_brief": brief,
+            "memory_snapshot": self.get_memory_snapshot(limit=8),
         }
 
-        print(f"[CASSANDRA AGENT] Intelligence brief generated.")
-        return result
-
-
     def chat(self, question: str, vpin_context: dict) -> str:
-        """
-        Natural language interface.
-        Allows a trader to ask questions about the current market state.
-        """
+        """Natural-language interface enhanced with recent agent memory."""
+        memory_snapshot = self.get_memory_snapshot(limit=5)
+
         prompt = f"""You are CASSANDRA, a crypto market intelligence analyst.
 
-Current market context:
-- VPIN Score: {vpin_context.get('vpin', 'N/A')}
-- Alert Level: {vpin_context.get('alert_level', 'N/A')}
-- Recent market data: {json.dumps(vpin_context.get('market_data', {}), default=str)}
+Current context:
+- VPIN score: {vpin_context.get('vpin', 'N/A')}
+- Alert level: {vpin_context.get('alert_level', 'N/A')}
+- Market data: {json.dumps(vpin_context.get('market_data', {}), default=str)}
+- Recent agent memory: {json.dumps(memory_snapshot, default=str)}
 
 Trader question: {question}
 
-Answer concisely and precisely using the market data available. 
-If you don't have enough data to answer definitively, say so clearly."""
+Answer precisely. Use memory to compare current conditions vs recent patterns.
+If confidence is low, say what additional evidence is needed."""
 
-        return call_mistral(prompt, ANALYST_MODEL, max_tokens=400, temperature=0.2)
+        response = self._safe_call_mistral(
+            prompt=prompt,
+            model=ANALYST_MODEL,
+            max_tokens=450,
+            temperature=0.2,
+        )
+        if response:
+            return response
+
+        return "I could not reach the reasoning model right now. Check market data and recent memory context, then retry."
 
 
-# ── Test Runner ────────────────────────────────────────────
 if __name__ == "__main__":
-    
-    # Simulate a VPIN spike alert
-    fake_history = [{"vpin": 0.5 + i * 0.01} for i in range(20)]
-    fake_history[-1]["vpin"] = 0.74
+    fake_history = [{"vpin": 0.52 + i * 0.01} for i in range(25)]
+    fake_history[-1]["vpin"] = 0.79
 
     agent = CassandraAgent()
-    
-    result = agent.run(
-        vpin_score=0.74,
-        alert_level="HIGH",
-        vpin_history=fake_history
-    )
+    result = agent.run(vpin_score=0.79, alert_level="HIGH", vpin_history=fake_history)
 
-    print("\n" + "="*60)
-    print("CASSANDRA INTELLIGENCE BRIEF")
-    print("="*60)
+    print("\n" + "=" * 60)
+    print("CASSANDRA AUTONOMOUS BRIEF")
+    print("=" * 60)
     print(result["intelligence_brief"])
-    print("="*60)
-
-    # Test the chat interface
-    print("\n[Testing chat interface...]")
-    response = agent.chat(
-        question="Is this spike more consistent with a liquidation cascade or informed accumulation?",
-        vpin_context={
-            "vpin": 0.74,
-            "alert_level": "HIGH",
-            "market_data": result["tool_results"].get("fetch_market_data", {})
-        }
-    )
-    print(f"\nChat response:\n{response}")
+    print("=" * 60)

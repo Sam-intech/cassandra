@@ -1,4 +1,49 @@
 import { formatTimestamp } from "../lib/format";
+import { Fragment } from "react";
+
+function renderInline(text) {
+  const chunks = String(text).split(/(\*\*.*?\*\*)/g);
+  return chunks.map((chunk, index) => {
+    if (chunk.startsWith("**") && chunk.endsWith("**")) {
+      return (
+        <strong key={`${chunk}-${index}`} className="font-bold text-white">
+          {chunk.slice(2, -2)}
+        </strong>
+      );
+    }
+    return <Fragment key={`${chunk}-${index}`}>{chunk}</Fragment>;
+  });
+}
+
+function renderBriefLine(line, index) {
+  const text = line.trim();
+  if (!text) {
+    return <div key={`spacer-${index}`} className="h-2" />;
+  }
+
+  if (text.startsWith("### ") || text.startsWith("## ") || text.startsWith("# ")) {
+    return (
+      <h3 key={`heading-${index}`} className="font-display text-sm font-bold uppercase tracking-wide text-white">
+        {renderInline(text.replace(/^#+\s*/, ""))}
+      </h3>
+    );
+  }
+
+  if (text.startsWith("- ") || text.startsWith("* ")) {
+    return (
+      <p key={`bullet-${index}`} className="pl-3 text-sm leading-6 text-white/90">
+        <span className="mr-2 text-signal-cyan">•</span>
+        {renderInline(text.slice(2))}
+      </p>
+    );
+  }
+
+  return (
+    <p key={`line-${index}`} className="text-sm leading-6 text-white/90">
+      {renderInline(text)}
+    </p>
+  );
+}
 
 function Placeholder() {
   return (
@@ -35,9 +80,11 @@ export default function IntelligenceBrief({ brief, error }) {
           </div>
 
           <article className="rounded-2xl border border-white/10 bg-ink-950/60 p-4">
-            <pre className="whitespace-pre-wrap font-display text-sm leading-6 text-white/90">
-              {brief.intelligence_brief || "No generated brief text found."}
-            </pre>
+            <div className="space-y-1 font-display">
+              {(brief.intelligence_brief || "No generated brief text found.")
+                .split("\n")
+                .map((line, index) => renderBriefLine(line, index))}
+            </div>
           </article>
         </div>
       )}

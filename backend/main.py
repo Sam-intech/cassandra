@@ -2,32 +2,27 @@
 import os
 import sys
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
-
-import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# Ensure absolute imports like `from backend...` work when running
+# `uvicorn main:app` from within the `backend` directory.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from backend.routers import agent, backtest, streams
-from backend.routers.streams import binance_stream_task
-from backend.state import app_state
+from backend.routers.streams import stop_streaming_task
+# ==============================================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start Binance stream on app startup
-    app_state.streaming = True
-    stream_task = asyncio.create_task(binance_stream_task())
-    print("[CASSANDRA] Binance stream started.")
+    # Do not auto-start stream; wait for explicit API call from frontend.
     yield
     # Cleanup on shutdown
-    app_state.streaming = False
-    stream_task.cancel()
-    await asyncio.gather(stream_task, return_exceptions=True)
-    print("[CASSANDRA] Stream stopped.")
+    await stop_streaming_task()
 
 app = FastAPI(
     title="CASSANDRA API",
@@ -38,7 +33,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Vite dev server
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -47,6 +42,17 @@ app.add_middleware(
 app.include_router(streams.router)
 app.include_router(backtest.router)
 app.include_router(agent.router)
+
+# Compatibility routes (same endpoints under /api/*)
+app.include_router(streams.router, prefix="/api")
+app.include_router(backtest.router, prefix="/api")
+app.include_router(agent.router, prefix="/api")
+
+# Compatibility routes for deployments using versioned API prefixes.
+app.include_router(streams.router, prefix="/api/v1")
+app.include_router(backtest.router, prefix="/api/v1")
+app.include_router(agent.router, prefix="/api/v1")
+
 
 @app.get("/")
 def root():

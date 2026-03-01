@@ -9,11 +9,18 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     question: str
 
+
 @router.get("/agent/brief")
 def get_latest_brief():
     if not app_state.latest_brief:
         return {"brief": None}
     return {"brief": app_state.latest_brief}
+
+
+@router.get("/agent/memory")
+def get_agent_memory(limit: int = 20):
+    return {"memory": app_state.agent.get_memory_snapshot(limit=limit)}
+
 
 @router.post("/agent/chat")
 def chat(request: ChatRequest):

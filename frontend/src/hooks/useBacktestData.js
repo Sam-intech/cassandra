@@ -17,7 +17,10 @@ export function useBacktestData() {
         if (ignore) return;
 
         if (payload.error) {
-          setError(payload.error);
+          const searchedPaths = Array.isArray(payload.searched_paths)
+            ? ` Searched: ${payload.searched_paths.join(", ")}`
+            : "";
+          setError(`${payload.error}${searchedPaths}`);
           return;
         }
 

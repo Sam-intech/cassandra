@@ -18,26 +18,16 @@ function MetricCard({ label, value, hint }) {
   );
 }
 
-export default function MetricsBar({ status, latestUpdate, isConnected }) {
+export default function MetricsBar({
+  status,
+  latestUpdate,
+}) {
   const currentVpin = status?.current_vpin ?? latestUpdate?.vpin ?? null;
   const alertLevel = classifyAlert(currentVpin);
   const alertStyle = ALERT_STYLES[alertLevel] || ALERT_STYLES.NORMAL;
 
   return (
-    <section className="animate-rise space-y-3">
-      <div className="flex items-center justify-between">
-        <h1 className="font-display text-2xl font-bold tracking-tight text-white">CASSANDRA Intelligence Terminal</h1>
-        <span
-          className={`rounded-full border px-3 py-1 font-mono text-xs uppercase tracking-wide ${
-            isConnected
-              ? "border-signal-cyan/45 bg-signal-cyan/15 text-signal-cyan"
-              : "border-signal-red/45 bg-signal-red/15 text-signal-red"
-          }`}
-        >
-          {isConnected ? "stream online" : "stream offline"}
-        </span>
-      </div>
-
+    <section className="animate-rise">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <MetricCard
           label="VPIN"

@@ -9,12 +9,13 @@ function makeId() {
 }
 
 export function useAgentChat() {
+  const initialMessage = {
+    id: makeId(),
+    role: "assistant",
+    content: "Ask about current VPIN behavior, liquidity risk, or tactical positioning.",
+  };
   const [messages, setMessages] = useState([
-    {
-      id: makeId(),
-      role: "assistant",
-      content: "Ask about current VPIN behavior, liquidity risk, or tactical positioning.",
-    },
+    initialMessage,
   ]);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState("");
@@ -54,5 +55,17 @@ export function useAgentChat() {
     }
   };
 
-  return { messages, isSending, error, sendMessage };
+  const resetConversation = () => {
+    setMessages([
+      {
+        id: makeId(),
+        role: "assistant",
+        content: initialMessage.content,
+      },
+    ]);
+    setError("");
+    setIsSending(false);
+  };
+
+  return { messages, isSending, error, sendMessage, resetConversation };
 }

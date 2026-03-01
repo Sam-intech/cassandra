@@ -7,13 +7,27 @@ from fastapi import APIRouter
 router = APIRouter()
 
 BACKTEST_RESULTS_PATH = Path(__file__).resolve().parents[1] / "data" / "ftx_vpin_results.csv"
+CWD_RESULTS_PATH = Path.cwd() / "data" / "ftx_vpin_results.csv"
+
 
 @router.get("/backtest/ftx")
 def get_ftx_backtest():
-    if not BACKTEST_RESULTS_PATH.exists():
-        return {"error": "Backtest data not found. Run utils/backtest.py first."}
+    source_path = None
+    for candidate in (BACKTEST_RESULTS_PATH, CWD_RESULTS_PATH):
+        if candidate.exists():
+            source_path = candidate
+            break
 
-    df = pd.read_csv(BACKTEST_RESULTS_PATH)
+    if source_path is None:
+        return {
+            "error": "Backtest data not found. Run utils/backtest.py first.",
+            "searched_paths": [
+                str(BACKTEST_RESULTS_PATH),
+                str(CWD_RESULTS_PATH),
+            ],
+        }
+
+    df = pd.read_csv(source_path)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
 
     # Key events for chart annotations
@@ -35,14 +49,18 @@ def get_ftx_backtest():
         }
     ]
 
+    chart_df = df[["timestamp", "vpin", "alert_level", "alert"]].copy()
+    chart_df["timestamp"] = chart_df["timestamp"].map(lambda ts: ts.isoformat())
+
     return {
-        "data": df[["timestamp", "vpin", "alert_level", "alert"]].to_dict(orient="records"),
+        "data": chart_df.to_dict(orient="records"),
         "events": events,
         "summary": {
             "total_buckets": len(df),
             "peak_vpin": round(df["vpin"].max(), 4),
             "first_alert": "2022-11-07T11:46:22+00:00",
             "minutes_before_public": 74,
-            "peak_timestamp": df.loc[df["vpin"].idxmax(), "timestamp"].isoformat()
-        }
+            "peak_timestamp": df.loc[df["vpin"].idxmax(), "timestamp"].isoformat(),
+            "source_file": str(source_path),
+        },
     }

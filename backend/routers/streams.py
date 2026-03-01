@@ -33,7 +33,39 @@ async def _broadcast_message(message_type: str, data: Any) -> None:
 
 
 def _should_trigger_agent(result: dict) -> bool:
-    return result["alert"] and result["vpin"] > app_state.last_alert_vpin + 0.02
+    if not result["alert"]:
+        return False
+
+    if result["vpin"] > app_state.last_alert_vpin + 0.02:
+        return True
+
+    recent = list(app_state.vpin_engine.vpin_history)[-3:]
+    return len(recent) == 3 and all(item.get("alert") for item in recent)
+
+
+async def start_streaming_task() -> bool:
+    task = app_state.stream_task
+    if app_state.streaming and task is not None and not task.done():
+        return False
+
+    app_state.streaming = True
+    app_state.stream_task = asyncio.create_task(binance_stream_task())
+    print("[CASSANDRA] Binance stream started.")
+    return True
+
+
+async def stop_streaming_task() -> bool:
+    was_streaming = app_state.streaming
+    app_state.streaming = False
+
+    task = app_state.stream_task
+    if task is not None and not task.done():
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        print("[CASSANDRA] Binance stream stopped.")
+
+    app_state.stream_task = None
+    return was_streaming
 
 
 async def trigger_agent(result: dict) -> None:
@@ -125,3 +157,105 @@ def stream_status():
         "current_vpin": app_state.vpin_engine.get_current_vpin(),
         "connected_clients": len(app_state.ws_clients)
     }
+
+
+@router.get("/streaming/status")
+def stream_status_legacy():
+    return stream_status()
+
+
+@router.get("/streams/status")
+def stream_status_legacy_alt():
+    return stream_status()
+
+
+@router.post("/stream/start")
+async def start_stream():
+    started = await start_streaming_task()
+    return {
+        "started": started,
+        "streaming": app_state.streaming,
+    }
+
+
+@router.post("/stream/resume")
+async def resume_stream():
+    return await start_stream()
+
+
+@router.post("/streaming/start")
+async def start_stream_legacy():
+    return await start_stream()
+
+
+@router.post("/streams/start")
+async def start_stream_legacy_alt():
+    return await start_stream()
+
+
+@router.post("/start-stream")
+async def start_stream_legacy_dash():
+    return await start_stream()
+
+
+@router.post("/start_stream")
+async def start_stream_legacy_snake():
+    return await start_stream()
+
+
+@router.post("/stream/stop")
+async def stop_stream():
+    stopped = await stop_streaming_task()
+    return {
+        "stopped": stopped,
+        "streaming": app_state.streaming,
+    }
+
+
+@router.post("/streaming/stop")
+async def stop_stream_legacy():
+    return await stop_stream()
+
+
+@router.post("/streams/stop")
+async def stop_stream_legacy_alt():
+    return await stop_stream()
+
+
+@router.post("/stop-stream")
+async def stop_stream_legacy_dash():
+    return await stop_stream()
+
+
+@router.post("/stop_stream")
+async def stop_stream_legacy_snake():
+    return await stop_stream()
+
+
+@router.post("/system/reset")
+async def reset_system(start_stream: bool = False):
+    await stop_streaming_task()
+    app_state.reset_runtime()
+
+    if start_stream:
+        await start_streaming_task()
+
+    await _broadcast_message(
+        "system_reset",
+        {
+            "streaming": app_state.streaming,
+            "trade_count": app_state.trade_count,
+            "latest_price": app_state.latest_price,
+            "current_vpin": app_state.vpin_engine.get_current_vpin(),
+        },
+    )
+
+    return {
+        "reset": True,
+        "streaming": app_state.streaming,
+    }
+
+
+@router.post("/reset")
+async def reset_system_legacy(start_stream: bool = False):
+    return await reset_system(start_stream=start_stream)

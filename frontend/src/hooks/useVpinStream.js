@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getWebsocketUrl } from "../lib/api";
+import { getWebsocketCandidates } from "../lib/api";
 
 const MAX_POINTS = 200;
 
@@ -21,12 +21,20 @@ export function useVpinStream() {
   const [connectionError, setConnectionError] = useState("");
   const socketRef = useRef(null);
   const retryRef = useRef(null);
+  const wsCandidateIndexRef = useRef(0);
 
   useEffect(() => {
     let isClosed = false;
+    const wsCandidates = getWebsocketCandidates();
+
+    if (wsCandidates.length === 0) {
+      setConnectionError("No websocket URL candidates available.");
+      return () => {};
+    }
 
     const connect = () => {
-      const socket = new WebSocket(getWebsocketUrl());
+      const wsUrl = wsCandidates[wsCandidateIndexRef.current % wsCandidates.length];
+      const socket = new WebSocket(wsUrl);
       socketRef.current = socket;
 
       socket.onopen = () => {
@@ -59,6 +67,13 @@ export function useVpinStream() {
 
           if (message.type === "intelligence_brief") {
             setLatestBrief(message.data || null);
+            return;
+          }
+
+          if (message.type === "system_reset") {
+            setLivePoints([]);
+            setLatestUpdate(null);
+            setLatestBrief(null);
           }
         } catch {
           setConnectionError("Received malformed websocket payload.");
@@ -72,6 +87,7 @@ export function useVpinStream() {
       socket.onclose = () => {
         setIsConnected(false);
         if (!isClosed) {
+          wsCandidateIndexRef.current += 1;
           retryRef.current = window.setTimeout(connect, 2000);
         }
       };
@@ -95,6 +111,12 @@ export function useVpinStream() {
     return latestUpdate.vpin;
   }, [latestUpdate]);
 
+  const clearStreamData = () => {
+    setLivePoints([]);
+    setLatestUpdate(null);
+    setLatestBrief(null);
+  };
+
   return {
     livePoints,
     latestUpdate,
@@ -102,5 +124,6 @@ export function useVpinStream() {
     currentVpin,
     isConnected,
     connectionError,
+    clearStreamData,
   };
 }
