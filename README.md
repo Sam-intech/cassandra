@@ -12,8 +12,7 @@
 
 ## Video-Demo
 
-<!-- [![CASSANDRA Video-Demo](https://img.youtube.com/vi/utDh-I640D7qUrID/maxresdefault.jpg)](https://youtu.be/3n46AMUEtvY?si=utDh-I640D7qUrID) -->
-<iframe width="560" height="315" src="https://www.youtube.com/embed/3n46AMUEtvY?si=RKNJVcqTv2gdkw62" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+[![CASSANDRA Video-Demo](https://img.youtube.com/vi/3n46AMUEtvY/maxresdefault.jpg)](https://youtu.be/3n46AMUEtvY?si=sVW6Oq_JG-WPkJUX)
 
 ---
 
