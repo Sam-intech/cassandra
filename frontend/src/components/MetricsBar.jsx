@@ -10,10 +10,10 @@ const ALERT_STYLES = {
 
 function MetricCard({ label, value, hint }) {
   return (
-    <article className="rounded-2xl border border-white/10 bg-ink-900/80 px-4 py-3 backdrop-blur-sm">
-      <p className="font-mono text-xs uppercase tracking-widest text-white/55">{label}</p>
-      <p className="mt-2 text-xl font-semibold text-white">{value}</p>
-      {hint ? <p className="mt-1 font-mono text-xs text-white/45">{hint}</p> : null}
+    <article className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-[0_14px_30px_-24px_rgba(15,23,42,0.45)]">
+      <p className="font-mono text-xs uppercase tracking-widest text-slate-500">{label}</p>
+      <p className="mt-2 text-xl font-semibold text-slate-900">{value}</p>
+      {hint ? <p className="mt-1 font-mono text-xs text-slate-500">{hint}</p> : null}
     </article>
   );
 }

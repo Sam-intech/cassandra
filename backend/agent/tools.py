@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from html import unescape
+import re
 from typing import Any, Callable
 
 import requests
@@ -22,6 +24,39 @@ def _get_json(url: str, timeout: int = 5, params: dict[str, Any] | None = None) 
     if response.status_code != 200:
         raise RuntimeError(f"HTTP {response.status_code}: {url}")
     return response.json()
+
+
+def _clean_html_text(raw_html: str) -> str:
+    # Strip script/style blocks and simple tags for lightweight article extraction.
+    text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", raw_html)
+    text = re.sub(r"(?is)<br\s*/?>", " ", text)
+    text = re.sub(r"(?is)</p>", "\n", text)
+    text = re.sub(r"(?is)<.*?>", " ", text)
+    text = unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _scrape_url_excerpt(url: str, max_chars: int = 420) -> str:
+    try:
+        response = requests.get(
+            url,
+            timeout=6,
+            headers={"User-Agent": "CASSANDRA-Agent/1.0 (+market-intel)"},
+        )
+        if response.status_code != 200:
+            return ""
+
+        html_doc = response.text
+        title_match = re.search(r"(?is)<title[^>]*>(.*?)</title>", html_doc)
+        title = _clean_html_text(title_match.group(1)) if title_match else ""
+
+        paragraphs = re.findall(r"(?is)<p[^>]*>(.*?)</p>", html_doc)
+        paragraph_text = " ".join(_clean_html_text(p) for p in paragraphs[:4])
+        merged = f"{title}. {paragraph_text}".strip(". ").strip()
+        return merged[:max_chars] if merged else ""
+    except Exception:
+        return ""
 
 
 def tool_fetch_crypto_news(symbol: str = "BTC", limit: int = 5) -> dict:
@@ -48,6 +83,50 @@ def tool_fetch_crypto_news(symbol: str = "BTC", limit: int = 5) -> dict:
         return {"symbol": symbol, "news": news_items, "count": len(news_items)}
     except Exception as exc:
         return {"error": str(exc), "symbol": symbol}
+
+
+def tool_scrape_web_context(query: str = "bitcoin market liquidity stress", limit: int = 5) -> dict:
+    """
+    Pull recent internet context and scrape short excerpts from article pages.
+    Source search list from the public GDELT document API.
+    """
+    try:
+        url = "https://api.gdeltproject.org/api/v2/doc/doc"
+        params = {
+            "query": query,
+            "mode": "ArtList",
+            "format": "json",
+            "maxrecords": max(1, min(limit, 10)),
+            "sort": "HybridRel",
+        }
+        payload = _get_json(url, timeout=8, params=params)
+
+        articles = payload.get("articles", []) if isinstance(payload, dict) else []
+        if not articles:
+            return {"query": query, "count": 0, "results": []}
+
+        results = []
+        for article in articles[:limit]:
+            article_url = article.get("url", "")
+            excerpt = _scrape_url_excerpt(article_url) if article_url else ""
+            results.append(
+                {
+                    "title": article.get("title", ""),
+                    "url": article_url,
+                    "domain": article.get("domain", ""),
+                    "published": article.get("seendate", ""),
+                    "language": article.get("language", ""),
+                    "excerpt": excerpt,
+                }
+            )
+
+        return {
+            "query": query,
+            "count": len(results),
+            "results": results,
+        }
+    except Exception as exc:
+        return {"error": str(exc), "query": query}
 
 
 def tool_fetch_binance_market_data(symbol: str = "BTCUSDT", depth_limit: int = 5) -> dict:
@@ -248,6 +327,16 @@ class AgentTools:
                 fallback_params=[
                     {"symbol": "ETH", "limit": 5},
                     {"symbol": "BTC", "limit": 10},
+                ],
+            ),
+            "scrape_web_context": ToolSpec(
+                name="scrape_web_context",
+                description="Scrape recent internet context and article excerpts for macro/micro catalysts.",
+                fn=tool_scrape_web_context,
+                default_params={"query": "bitcoin market liquidity stress", "limit": 5},
+                fallback_params=[
+                    {"query": "btc exchange risk liquidity", "limit": 5},
+                    {"query": "eth crypto market contagion", "limit": 5},
                 ],
             ),
             "analyse_vpin_pattern": ToolSpec(
