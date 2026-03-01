@@ -10,6 +10,13 @@
 
 ---
 
+## Video-Demo
+
+[![CASSANDRA Video-Demo](https://img.youtube.com/vi/utDh-I640D7qUrID/maxresdefault.jpg)](https://youtu.be/3n46AMUEtvY?si=utDh-I640D7qUrID)
+
+---
+
+
 ## The Signal Was There 74 Minutes Before FTX Collapsed. Nobody Was Watching.
 
 On November 7th, 2022, FTX — one of the largest crypto exchanges in the world — began its collapse. Billions were lost. Millions of users were blindsided.
